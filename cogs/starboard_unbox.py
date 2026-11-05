@@ -421,7 +421,7 @@ class StarboardUnbox(commands.Cog):
                 "❌ Couldn't DM you. Please enable DMs from server members and try again."
             )
 
-    @commands.command(name="unboxcheck", aliases=["uc", "checkunbox"])
+    @commands.command(name="unboxcheck", aliases=["bcheck", "eventcheck"])
     @commands.has_permissions(administrator=True)
     async def unbox_check_command(self, ctx, *, input_data: str = None):
         """Manually check a Poketwo box opening message and send results to DMs
