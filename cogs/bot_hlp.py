@@ -35,7 +35,7 @@ class Help(commands.Cog):
     async def help_command(self, ctx, category: str = None):
         """Show help information
 
-        Categories: collection, category, hunt, pings, settings, roles, blacklist, prediction, starboard, helpful, eventextract, incense, captcha, reserve, organize, channels, listgen, owner, all
+        Categories: collection, category, hunt, pings, settings, roles, blacklist, prediction, starboard, helpful, eventextract, incense, captcha, reserve, organize, channels, listgen, ids, owner, all
         """
         prefix = BOT_PREFIX[0]
         is_owner = await self.bot.is_owner(ctx.author)
@@ -62,6 +62,7 @@ class Help(commands.Cog):
             embed.add_field(name="💾 Reserve",          value=f"`{prefix}help reserve` — Server-specific Pokémon reservation system",      inline=False)
             embed.add_field(name="🗂️ Organize",         value=f"`{prefix}help organize` — Claimable-spot events that feed into reserves",  inline=False)
             embed.add_field(name="📝 List Builder",      value=f"`{prefix}help listgen` — Build and export Pokémon name lists",              inline=False)
+            embed.add_field(name="🔄 Release & Evolve", value=f"`{prefix}help ids` — Personal ID lists for releasing & evolving", inline=False)
             if is_owner:
                 embed.add_field(name="👑 Owner",        value=f"`{prefix}help owner` — Bot owner commands",                               inline=False)
             embed.add_field(name="ℹ️ About",            value=f"`{prefix}about` — Bot information and stats",                             inline=False)
@@ -1033,6 +1034,79 @@ class Help(commands.Cog):
                 inline=False,
             )
 
+        # ── Release & Evolve ──────────────────────────────────────────
+        elif category in ["ids", "idlist", "idlists", "release", "evolve", "rel"]:
+            embed = discord.Embed(
+                title="🔄 Release & Evolve Lists",
+                description=(
+                    "Keep personal lists of Pokémon IDs, then pull a batch out whenever you need it — "
+                    "the bot gives you a ready-to-paste Pokétwo command. Lists are yours alone and work in every server."
+                ),
+                color=EMBED_COLOR,
+            )
+            embed.add_field(
+                name=f"`{prefix}release <count>` / `{prefix}rel <count>`  •  `/release`",
+                value=(
+                    "Take the first N IDs off your release list and output the Pokétwo release command\n"
+                    f"• `{prefix}release 7`\n"
+                    "Very long outputs are split into several messages so each one is pasteable."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name=f"`{prefix}evolve <count>` / `{prefix}e <count>`  •  `/evolve`",
+                value=(
+                    "Take N IDs off your evolve list and output the Pokétwo evolve command\n"
+                    f"• `{prefix}evolve 7`\n"
+                    "⭐ IDs with **1 use** are picked first, then 2-use IDs. A 2-use ID that gets picked stays on the list with 1 use left."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🔧 Panels",
+                value=(
+                    f"`{prefix}releasepanel` / `{prefix}relp`  •  `{prefix}evolvepanel` / `{prefix}ep`\n"
+                    "Button panel to add, remove, view, clear and use IDs. Only you can press its buttons."
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🔀 Release List",
+                value=(
+                    f"`{prefix}releaseadd <ids>` / `{prefix}ra` — add IDs\n"
+                    f"`{prefix}releaseremove <ids>` / `{prefix}rr` — remove IDs\n"
+                    f"`{prefix}releaselist` / `{prefix}rl` — view your list (paginated)\n"
+                    f"`{prefix}releaseclear` / `{prefix}rc` — empty the list"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="🌱 Evolve List",
+                value=(
+                    f"`{prefix}evolveadd <ids>` / `{prefix}ea` — add IDs with **2 uses**\n"
+                    f"`{prefix}evolveadd <ids> --once` — add IDs with **1 use** (priority)\n"
+                    f"`{prefix}evolveremove <ids>` / `{prefix}er` — remove IDs completely\n"
+                    f"`{prefix}evolveremove <ids> --once` — remove just one use\n"
+                    f"`{prefix}evolvelist` / `{prefix}el` — view with 1x / 2x tabs\n"
+                    f"`{prefix}evolveclear` / `{prefix}ec` — empty the list"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="💡 Note",
+                value=(
+                    f"IDs are numbers separated by spaces (`{prefix}releaseadd 123 456 789`). "
+                    "Duplicates and non-numeric text are ignored."
+                ),
+                inline=False,
+            )
+            if is_owner:
+                embed.add_field(
+                    name="👑 Owner",
+                    value=f"`{prefix}idmigrate [source_db]` — copy lists from the old helper bot's database (skips users who already have one)",
+                    inline=False,
+                )
+
         elif category in ["all", "commands"]:
             embed = discord.Embed(
                 title="📚 All Commands",
@@ -1154,6 +1228,15 @@ class Help(commands.Cog):
                 inline=False,
             )
             embed.add_field(
+                name="🔄 Release & Evolve",
+                value=(
+                    f"`{prefix}release <n>` / `{prefix}rel` • `{prefix}evolve <n>` / `{prefix}e` — also `/release` `/evolve`\n"
+                    f"`{prefix}releaseadd/remove/list/clear` (`ra rr rl rc`) • `{prefix}releasepanel` (`relp`)\n"
+                    f"`{prefix}evolveadd/remove/list/clear` (`ea er el ec`, `--once`) • `{prefix}evolvepanel` (`ep`)"
+                ),
+                inline=False,
+            )
+            embed.add_field(
                 name="🔍 Starboard Manual Check  *(Admin)*",
                 value=f"`{prefix}catchcheck` • `{prefix}eggcheck` • `{prefix}unboxcheck` (supports multiple message IDs)",
                 inline=False,
@@ -1180,7 +1263,7 @@ class Help(commands.Cog):
             await ctx.reply(
                 f"❌ Unknown category: `{category}`\n"
                 f"Available: `collection`, `category`, `hunt`, `pings`, `settings`, `roles`, `blacklist`, `channels`, "
-                f"`prediction`, `starboard`, `helpful`, `eventextract`, `incense`, `captcha`, `reserve`, `organize`, `listgen`, "
+                f"`prediction`, `starboard`, `helpful`, `eventextract`, `incense`, `captcha`, `reserve`, `organize`, `listgen`, `ids`, "
                 f"{'`owner`, ' if is_owner else ''}`all`\n"
                 f"Use `{prefix}help` to see the main help menu.",
                 mention_author=False,
@@ -1213,7 +1296,8 @@ class Help(commands.Cog):
                 "• 🔕 **AFK Mode** — Disable pings when you're away\n"
                 "• 🏷️ **Best Name** — Optionally show shortest known name per prediction\n"
                 "• 📥 **Event Extract** — Export event Pokémon data straight from Pokétwo embeds\n"
-                "• 🗂️ **Organize Events** — Claimable-spot embeds that feed straight into reserves"
+                "• 🗂️ **Organize Events** — Claimable-spot embeds that feed straight into reserves\n"
+                "• 🔄 **Release & Evolve Lists** — Personal ID lists that output ready-to-paste Pokétwo commands"
             ),
             inline=False,
         )
@@ -1305,7 +1389,7 @@ class Help(commands.Cog):
     # Slash Commands
     # ------------------------------------------------------------------
     @app_commands.command(name="help", description="Show help information for the bot")
-    @app_commands.describe(category="Category: collection, category, hunt, pings, settings, roles, blacklist, channels, prediction, starboard, helpful, eventextract, incense, captcha, reserve, organize, listgen, all")
+    @app_commands.describe(category="Category: collection, category, hunt, pings, settings, roles, blacklist, channels, prediction, starboard, helpful, eventextract, incense, captcha, reserve, organize, listgen, ids, all")
     async def slash_help(self, interaction: discord.Interaction, category: str = None):
         ctx = await commands.Context.from_interaction(interaction)
         await self.help_command(ctx, category=category)
