@@ -11,16 +11,25 @@ Mongo database (bot.db.db):
 To wipe the feature completely, drop those two collections.
 
 Commands (prefix + aliases; aliases are editable in ALIASES below)
-    release  / r    <count>        hybrid: also /release
-    releasepanel / rp   releaseadd / ra   releaseremove / rr
-    releaseclear / rc   releaselist / rl
-    evolve   / e    <count>        hybrid: also /evolve
-    evolvepanel / ep    evolveadd / ea    evolveremove / er  (--once)
-    evolveclear / ec    evolvelist / el
+    release  <count>               hybrid: also /release
+    releasepanel / rpanel   releaseadd / radd   releaseremove / rremove
+    releaseclear / rclear   releaselist / rlist
+    evolve   <count>               hybrid: also /evolve
+    evolvepanel / epanel    evolveadd / eadd    evolveremove / eremove  (--once)
+    evolveclear / eclear    evolvelist / elist
     idmigrate  (owner only) — copy lists from the old helper bot's database
+
+Adding IDs (releaseadd / evolveadd) works two ways, and both can be combined:
+    releaseadd 123 456 789      type the IDs
+    (reply to a Pokétwo embed) releaseadd
+                                IDs are read straight from the embed, then the message is
+                                watched for edits (e.g. flipping pages) and new IDs are added
+                                live. Watching stops after EDIT_WATCH_SECS without an edit,
+                                when the message is deleted, or when the cog unloads.
 """
 import asyncio
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import Optional
 
 import discord
@@ -42,13 +51,14 @@ EVOLVE_COLLECTION = "helper_evolve_ids"
 RELEASE_PER_PAGE = 150      # IDs per page in the release list view
 EVOLVE_PER_PAGE = 50        # IDs per page in the evolve list view
 MAX_COMMAND_CHARS = 1900    # max length of one "<@Poketwo> r 1 2 3…" line (fits a normal 2000-char message)
+EDIT_WATCH_SECS = 120       # releaseadd/evolveadd as a reply: stop watching after this long with no edit (each edit resets it)
 
 # Edit / empty a list here if an alias collides with another cog.
 ALIASES = {
     "releasepanel": ["rpanel"], "releaseadd": ["radd"], "releaseremove": ["rremove"],
-    "releaseclear": ["rclear"], "releaselist": ["rlist"], "release": ["release"],
-    "evolvepanel": ["epannel"], "evolveadd": ["eadd"], "evolveremove": ["eremove"],
-    "evolveclear": ["eclear"], "evolvelist": ["elist"], "evolve": ["evolve"],
+    "releaseclear": ["rclear"], "releaselist": ["rlist"], "release": [],
+    "evolvepanel": ["epanel"], "evolveadd": ["eadd"], "evolveremove": ["eremove"],
+    "evolveclear": ["eclear"], "evolvelist": ["elist"], "evolve": [],
 }
 
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -126,6 +136,44 @@ def _command_embeds(kind: _Kind, ids: list[str], footer: str) -> list[discord.Em
         embed.set_footer(text=part + footer)
         embeds.append(embed)
     return embeds
+
+
+# Pokétwo list / marketplace / gigantamax embeds all start each row with the ID in backticks:
+#   `39556693`  ...   ` 9593`  ...   **`586470`**  ...
+_ID_LINE = re.compile(r"^\*{0,2}`\s*(\d+)\s*`\*{0,2}")
+
+
+def _extract_ids(message: discord.Message) -> list[str]:
+    """IDs from a message's embeds, top-to-bottom, de-duplicated.
+
+    Only the first backticked number of each line counts, so stray numbers elsewhere
+    on a row (levels, prices…) can never end up on a release list by accident.
+    """
+    ids, seen = [], set()
+    for embed in message.embeds:
+        for line in (embed.description or "").splitlines():
+            m = _ID_LINE.match(line.strip())
+            if m and m.group(1) not in seen:
+                seen.add(m.group(1))
+                ids.append(m.group(1))
+    return ids
+
+
+@dataclass(eq=False)
+class _Watch:
+    """One live "reply + add" session: a message being watched for edits."""
+    kind: "_Kind"
+    user_id: int
+    uses: int
+    source_id: int
+    channel: discord.abc.Messageable
+    note: str = ""
+    status: Optional[discord.Message] = None
+    seen: set = field(default_factory=set)      # IDs already read from the message
+    added: int = 0                              # new IDs written to the list this session
+    total: int = 0                              # list size after the latest write
+    edited: asyncio.Event = field(default_factory=asyncio.Event)
+    task: Optional[asyncio.Task] = None
 
 
 async def _reply(ctx: commands.Context, content: Optional[str] = None, *,
@@ -394,6 +442,22 @@ class ReleaseEvolve(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._locks: dict[tuple[str, int], asyncio.Lock] = {}
+        # active edit-watchers: (source_message_id, list name, user_id) -> _Watch
+        self._watches: dict[tuple[int, str, int], _Watch] = {}
+
+    def cog_unload(self):
+        for watch in list(self._watches.values()):
+            if watch.task and not watch.task.done():
+                watch.task.cancel()
+        self._watches.clear()
+
+    @commands.Cog.listener()
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent):
+        """Wake any watcher of this message. Raw event so it also fires for messages
+        that aren't in the bot's cache; the watcher re-fetches the message itself."""
+        for watch in list(self._watches.values()):
+            if watch.source_id == payload.message_id:
+                watch.edited.set()
 
     async def cog_load(self):
         for kind in (RELEASE, EVOLVE):
@@ -443,6 +507,11 @@ class ReleaseEvolve(commands.Cog):
         if not ids:
             return "❌ Please provide at least one valid numeric ID!" + note
 
+        new, total = await self._add_ids(kind, user_id, ids, uses)
+        return self._add_text(kind, len(new), total, uses) + note
+
+    async def _add_ids(self, kind: _Kind, user_id: int, ids: list[str], uses: int = 2) -> tuple[list[str], int]:
+        """Write already-validated IDs. Returns (IDs that were actually new, list size afterwards)."""
         async with self._lock(kind, user_id):
             items = await self._load(kind, user_id)
             existing = {x["id"] for x in items}
@@ -450,14 +519,16 @@ class ReleaseEvolve(commands.Cog):
             if new:
                 items.extend({"id": i, "uses": uses if kind.has_uses else 1} for i in new)
                 await self._save(kind, user_id, items)
+        return new, len(items)
 
-        total = len(items)
-        if not new:
-            return f"⚠️ No new IDs added (all were duplicates). Total IDs: {total}" + note
+    @staticmethod
+    def _add_text(kind: _Kind, added: int, total: int, uses: int) -> str:
+        if not added:
+            return f"⚠️ No new IDs added (all were duplicates). Total IDs: {total}"
         use_text = ""
         if kind.has_uses:
             use_text = " with 1 use" if uses == 1 else " with 2 uses"
-        return f"✅ Added {len(new)} ID(s){use_text} to your {kind.name} list! Total IDs: {total}" + note
+        return f"✅ Added {added} ID(s){use_text} to your {kind.name} list! Total IDs: {total}"
 
     async def remove(self, kind: _Kind, user_id: int, tokens, once: bool = False) -> str:
         if self._col(kind) is None:
@@ -570,11 +641,131 @@ class ReleaseEvolve(commands.Cog):
         view.message = await _reply(ctx, embed=embed, view=view)
 
     async def _send_add(self, ctx: commands.Context, kind: _Kind, args):
+        """Add IDs typed after the command and/or read from a replied-to embed."""
         tokens, once = _split_once_flag(args) if kind.has_uses else (list(args), False)
-        if not tokens:
-            await _reply(ctx, "❌ Please provide at least one ID!")
+        uses = 1 if once else 2
+
+        source, error = await self._reply_source(ctx)
+        if error:
+            await _reply(ctx, error)
             return
-        await _reply(ctx, await self.add(kind, ctx.author.id, tokens, 1 if once else 2))
+        extracted = _extract_ids(source) if source is not None else []
+
+        if not tokens and not extracted:
+            if source is not None:
+                await _reply(ctx, "❌ I couldn't find any Pokemon IDs in that message's embeds!")
+            else:
+                await _reply(ctx, f"❌ Give me some IDs (`{kind.name}add 123 456`) "
+                                  f"or reply to a Pokétwo embed with `{kind.name}add`.")
+            return
+
+        if not extracted:       # plain typed IDs, nothing to watch
+            await _reply(ctx, await self.add(kind, ctx.author.id, tokens, uses))
+            return
+
+        if self._col(kind) is None:
+            await _reply(ctx, _NO_DB)
+            return
+        ids, invalid = _parse_ids(list(tokens) + extracted)
+        new, total = await self._add_ids(kind, ctx.author.id, ids, uses)
+
+        watch = _Watch(kind=kind, user_id=ctx.author.id, uses=uses,
+                       source_id=source.id, channel=source.channel,
+                       note=_invalid_note(invalid), seen=set(extracted),
+                       added=len(new), total=total)
+        watch.status = await _reply(ctx, self._watch_text(watch, watching=True))
+        self._start_watch(watch)
+
+    # ── reply extraction + edit watching ─────────────────────────────
+
+    async def _reply_source(self, ctx: commands.Context) -> tuple[Optional[discord.Message], Optional[str]]:
+        """The message being replied to: (message, None), (None, None) if not a reply,
+        or (None, error text) if it couldn't be fetched."""
+        ref = ctx.message.reference
+        if ref is None or ref.message_id is None:
+            return None, None
+        if isinstance(ref.resolved, discord.Message):
+            return ref.resolved, None
+        try:
+            return await ctx.channel.fetch_message(ref.message_id), None
+        except discord.NotFound:
+            return None, "❌ Could not find the replied message!"
+        except discord.Forbidden:
+            return None, "❌ I don't have permission to read that message!"
+        except discord.HTTPException:
+            return None, "❌ Couldn't fetch the replied message, please try again."
+
+    @staticmethod
+    def _watch_text(watch: _Watch, watching: bool) -> str:
+        text = ReleaseEvolve._add_text(watch.kind, watch.added, watch.total, watch.uses)
+        text += f"\n📥 Read {len(watch.seen)} ID(s) from the message" + watch.note
+        if watching:
+            span = f"{EDIT_WATCH_SECS // 60} min" if EDIT_WATCH_SECS >= 60 else f"{EDIT_WATCH_SECS:g}s"
+            text += f"\n👀 Watching that message for edits — stops after {span} without one."
+        return text
+
+    def _start_watch(self, watch: _Watch):
+        key = (watch.source_id, watch.kind.name, watch.user_id)
+        old = self._watches.pop(key, None)       # same user re-running on the same message
+        if old is not None and old.task and not old.task.done():
+            old.task.cancel()
+        self._watches[key] = watch
+        watch.task = asyncio.create_task(self._run_watch(key, watch))
+
+    async def _run_watch(self, key, watch: _Watch):
+        """Wait for edits to the source message; every edit resets the inactivity timer."""
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(watch.edited.wait(), timeout=EDIT_WATCH_SECS)
+                except asyncio.TimeoutError:
+                    break
+                watch.edited.clear()                 # an edit during the work below sets it again
+
+                try:
+                    fresh = await watch.channel.fetch_message(watch.source_id)
+                except discord.NotFound:
+                    break                            # watched message was deleted
+                except discord.HTTPException:
+                    continue
+
+                new_ids = [i for i in _extract_ids(fresh) if i not in watch.seen]
+                if not new_ids:
+                    continue
+                watch.seen.update(new_ids)
+
+                try:
+                    added, total = await self._add_ids(watch.kind, watch.user_id, new_ids, watch.uses)
+                except Exception as e:               # DB hiccup: stop cleanly instead of dying silently
+                    print(f"⚠️ ReleaseEvolve: edit-watch write failed: {e}")
+                    break
+                watch.added += len(added)
+                watch.total = total
+                try:
+                    await watch.status.edit(content=self._watch_text(watch, watching=True),
+                                            allowed_mentions=NO_MENTIONS)
+                except discord.HTTPException:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                       # never let the task die unnoticed
+            print(f"⚠️ ReleaseEvolve: edit-watch crashed: {e!r}")
+        finally:
+            await self._finish_watch(key, watch)
+
+    async def _finish_watch(self, key, watch: _Watch):
+        """Cleanup: drop the registry entry, remove the 'watching' line, free the state."""
+        if self._watches.get(key) is watch:
+            del self._watches[key]
+        if watch.status is not None:
+            try:
+                await watch.status.edit(content=self._watch_text(watch, watching=False),
+                                        allowed_mentions=NO_MENTIONS)
+            except Exception:
+                pass
+        watch.seen.clear()
+        watch.status = None
+        watch.task = None
 
     async def _send_remove(self, ctx: commands.Context, kind: _Kind, args):
         tokens, once = _split_once_flag(args) if kind.has_uses else (list(args), False)
