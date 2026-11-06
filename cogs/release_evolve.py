@@ -45,10 +45,10 @@ MAX_COMMAND_CHARS = 1900    # max length of one "<@Poketwo> r 1 2 3…" line (fi
 
 # Edit / empty a list here if an alias collides with another cog.
 ALIASES = {
-    "releasepanel": ["rp"], "releaseadd": ["ra"], "releaseremove": ["rr"],
-    "releaseclear": ["rc"], "releaselist": ["rl"], "release": ["r"],
-    "evolvepanel": ["ep"], "evolveadd": ["ea"], "evolveremove": ["er"],
-    "evolveclear": ["ec"], "evolvelist": ["el"], "evolve": ["e"],
+    "releasepanel": ["rpanel"], "releaseadd": ["radd"], "releaseremove": ["rremove"],
+    "releaseclear": ["rclear"], "releaselist": ["rlist"], "release": ["release"],
+    "evolvepanel": ["epannel"], "evolveadd": ["eadd"], "evolveremove": ["eremove"],
+    "evolveclear": ["eclear"], "evolvelist": ["elist"], "evolve": ["evolve"],
 }
 
 NO_MENTIONS = discord.AllowedMentions.none()
