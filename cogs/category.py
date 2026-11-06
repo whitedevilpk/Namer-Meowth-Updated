@@ -3,7 +3,7 @@ import discord
 import math
 from discord import app_commands
 from discord.ext import commands
-from typing import List
+from typing import List, Optional
 from utils import (
     load_pokemon_data,
     find_all_pokemon_by_name_flexible,
@@ -343,6 +343,169 @@ class DefaultCategoryPreviewView(discord.ui.View):
             f"✅ **{cat_name}** ({len(pokemon)} Pokémon) {verb} successfully.",
             ephemeral=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# p!cp — one toggle button per category (same effect as p!cat add / p!cat remove)
+# ---------------------------------------------------------------------------
+CP_BUTTONS_NO_NAV = 25     # Discord's limit is 25 buttons per message
+CP_BUTTONS_WITH_NAV = 20   # leaves the bottom row free for ◀ / ▶
+CP_MAX_LABEL = 28
+_CP_EMOJI_BY_LABEL = {m["label"].lower(): m.get("emoji") for m in DEFAULT_CATEGORIES.values()}
+
+
+def _cp_emoji(name: str) -> str:
+    return _CP_EMOJI_BY_LABEL.get(name.lower()) or "📦"
+
+
+def _cp_state(pokemon: list, owned: set) -> str:
+    """'on' = you have all of it, 'partial' = some, 'off' = none."""
+    have = sum(1 for p in pokemon if p in owned)
+    if pokemon and have == len(pokemon):
+        return "on"
+    return "partial" if have else "off"
+
+
+class CategoryToggleView(discord.ui.View):
+    """Green button = category is in your collection. Click to add it (like p!cat add)
+    or, if it's already fully there, to remove it (like p!cat remove)."""
+
+    def __init__(self, cog: "Category", user_id: int, guild_id: int, categories: list, owned: set):
+        super().__init__(timeout=90)
+        self.cog = cog
+        self.user_id = user_id
+        self.guild_id = guild_id
+        self.categories = categories
+        self.owned = owned
+        self.page = 0
+        self.message: Optional[discord.Message] = None
+        self._build()
+
+    @property
+    def per_page(self) -> int:
+        return CP_BUTTONS_NO_NAV if len(self.categories) <= CP_BUTTONS_NO_NAV else CP_BUTTONS_WITH_NAV
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, math.ceil(len(self.categories) / self.per_page))
+
+    def _page_cats(self) -> list:
+        start = self.page * self.per_page
+        return self.categories[start:start + self.per_page]
+
+    def _build(self):
+        self.clear_items()
+        self.page = min(self.page, self.total_pages - 1)
+
+        for cat in self._page_cats():
+            name = cat["name"]
+            state = _cp_state(cat.get("pokemon", []), self.owned)
+            style = {
+                "on": discord.ButtonStyle.success,
+                "partial": discord.ButtonStyle.primary,
+            }.get(state, discord.ButtonStyle.secondary)
+            btn = discord.ui.Button(
+                label=name if len(name) <= CP_MAX_LABEL else name[:CP_MAX_LABEL - 1] + "…",
+                emoji=_cp_emoji(name),
+                style=style,
+                disabled=not cat.get("pokemon"),
+            )
+            btn.callback = self._make_callback(name)
+            self.add_item(btn)
+
+        if self.total_pages > 1:
+            prev_btn = discord.ui.Button(emoji="◀️", style=discord.ButtonStyle.secondary,
+                                         disabled=self.page <= 0, row=4)
+            prev_btn.callback = self._prev
+            counter = discord.ui.Button(label=f"{self.page + 1} / {self.total_pages}",
+                                        style=discord.ButtonStyle.secondary, disabled=True, row=4)
+            next_btn = discord.ui.Button(emoji="▶️", style=discord.ButtonStyle.secondary,
+                                         disabled=self.page >= self.total_pages - 1, row=4)
+            next_btn.callback = self._next
+            self.add_item(prev_btn)
+            self.add_item(counter)
+            self.add_item(next_btn)
+
+    def build_embed(self) -> discord.Embed:
+        dots = {"on": "🟢", "partial": "🟡", "off": "⚫"}
+        lines = []
+        for cat in self._page_cats():
+            pokemon = cat.get("pokemon", [])
+            lines.append(
+                f"{dots[_cp_state(pokemon, self.owned)]} {_cp_emoji(cat['name'])} "
+                f"**{cat['name']}** — {len(pokemon)} Pokémon"
+            )
+        embed = discord.Embed(
+            title="📦 Categories",
+            description="🟢 added • 🟡 partly added • ⚫ not added\n\n" + "\n".join(lines),
+            color=EMBED_COLOR,
+        )
+        enabled = sum(1 for c in self.categories if _cp_state(c.get("pokemon", []), self.owned) == "on")
+        footer = f"Click a button to toggle • {enabled}/{len(self.categories)} added"
+        if self.total_pages > 1:
+            footer += f" • Page {self.page + 1}/{self.total_pages}"
+        embed.set_footer(text=footer)
+        return embed
+
+    async def _reload(self):
+        """Re-read categories and your collection so the buttons match the database."""
+        cats = await self.cog.db.get_all_categories(self.guild_id)
+        self.categories = sorted(cats, key=lambda c: c["name"].lower())
+        self.owned = set(await self.cog.db.get_user_collection(self.user_id, self.guild_id))
+        self._build()
+
+    async def _not_yours(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This button is not for you!", ephemeral=True)
+            return True
+        return False
+
+    def _make_callback(self, name: str):
+        async def callback(interaction: discord.Interaction):
+            if await self._not_yours(interaction):
+                return
+
+            notice = None
+            category = await self.cog.db.get_category(self.guild_id, name)
+            pokemon = category.get("pokemon", []) if category else []
+            if not category:
+                notice = f"❌ Category `{name}` no longer exists."
+            elif pokemon:
+                owned = set(await self.cog.db.get_user_collection(self.user_id, self.guild_id))
+                if all(p in owned for p in pokemon):
+                    await self.cog.db.remove_pokemon_from_collection(self.user_id, self.guild_id, pokemon)
+                else:
+                    await self.cog.db.add_pokemon_to_collection(self.user_id, self.guild_id, pokemon)
+
+            await self._reload()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+            if notice:
+                await interaction.followup.send(notice, ephemeral=True)
+        return callback
+
+    async def _prev(self, interaction: discord.Interaction):
+        if await self._not_yours(interaction):
+            return
+        self.page = max(0, self.page - 1)
+        self._build()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        if await self._not_yours(interaction):
+            return
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self._build()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def on_timeout(self):
+        self.clear_items()
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+        self.message = None
+        self.cog = None
 
 
 # ---------------------------------------------------------------------------
@@ -775,6 +938,31 @@ class Category(commands.Cog):
             await ctx.reply(embed=embed, mention_author=False, allowed_mentions=NO_MENTIONS)
 
     # ------------------------------------------------------------------
+    # p!cp — toggle categories with buttons
+    # ------------------------------------------------------------------
+    @commands.command(name="cp", aliases=["cpings"])
+    @commands.guild_only()
+    async def category_buttons(self, ctx):
+        """Toggle categories with buttons (click = p!cat add, click again = p!cat remove)"""
+        categories = await self.db.get_all_categories(ctx.guild.id)
+        if not categories:
+            await ctx.reply(
+                "This server has no categories yet. "
+                "Use `p!cat defaults` to add built-in ones, or `p!cat create` to make your own.",
+                mention_author=False,
+                allowed_mentions=NO_MENTIONS,
+            )
+            return
+
+        categories = sorted(categories, key=lambda c: c["name"].lower())
+        owned = set(await self.db.get_user_collection(ctx.author.id, ctx.guild.id))
+        view = CategoryToggleView(self, ctx.author.id, ctx.guild.id, categories, owned)
+        view.message = await ctx.reply(
+            embed=view.build_embed(), view=view,
+            mention_author=False, allowed_mentions=NO_MENTIONS,
+        )
+
+    # ------------------------------------------------------------------
     # Error handlers
     # ------------------------------------------------------------------
     @category_create.error
@@ -800,6 +988,12 @@ class Category(commands.Cog):
     # ------------------------------------------------------------------
     # Slash commands
     # ------------------------------------------------------------------
+    @app_commands.command(name="cp", description="Toggle categories in your collection with buttons")
+    @app_commands.guild_only()
+    async def slash_category_buttons(self, interaction: discord.Interaction):
+        ctx = await commands.Context.from_interaction(interaction)
+        await self.category_buttons(ctx)
+
     cat_group = app_commands.Group(name="cat", description="Category management for bulk collection operations")
 
     @cat_group.command(name="defaults", description="Browse built-in categories and add them to this server (Admin only)")
