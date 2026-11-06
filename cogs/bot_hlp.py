@@ -1084,9 +1084,10 @@ class Help(commands.Cog):
             embed.add_field(
                 name="🌱 Evolve List",
                 value=(
-                    f"`{prefix}evolveadd <ids>` / `{prefix}eadd` — add IDs with **2 uses**\n"
-                    f"`{prefix}evolveadd <ids> --once` — add IDs with **1 use** (priority)\n"
-                    f"`{prefix}evolveadd` *(reply to a Pokétwo embed)* — grab the IDs from the embed (add `--once` for 1 use)\n"
+                    f"`{prefix}evolveadd <ids>` / `{prefix}eadd` — add IDs; the bot asks if they can evolve **once** or **twice**\n"
+                    f"`{prefix}evolveadd <ids> --once` — skip the question, save with **1 use** (priority)\n"
+                    f"`{prefix}evolveadd <ids> --twice` — skip the question, save with **2 uses**\n"
+                    f"`{prefix}evolveadd` *(reply to a Pokétwo embed)* — grab the IDs from the embed (the bot asks once or twice)\n"
                     f"`{prefix}evolveremove <ids>` / `{prefix}eremove` — remove IDs completely\n"
                     f"`{prefix}evolveremove <ids> --once` — remove just one use\n"
                     f"`{prefix}evolvelist` / `{prefix}elist` — view with 1x / 2x tabs\n"
@@ -1244,7 +1245,7 @@ class Help(commands.Cog):
                 value=(
                     f"`{prefix}release <n>` • `{prefix}evolve <n>` — also `/release` `/evolve`\n"
                     f"`{prefix}releaseadd/remove/list/clear` (`radd rremove rlist rclear`) • `{prefix}releasepanel` (`rpanel`)\n"
-                    f"`{prefix}evolveadd/remove/list/clear` (`eadd eremove elist eclear`, `--once`) • `{prefix}evolvepanel` (`epanel`)\n"
+                    f"`{prefix}evolveadd/remove/list/clear` (`eadd eremove elist eclear`, `--once` `--twice`) • `{prefix}evolvepanel` (`epanel`)\n"
                     f"↳ `releaseadd` / `evolveadd` also work as a **reply to a Pokétwo embed** (IDs are read from it, edits are watched)"
                 ),
                 inline=False,
