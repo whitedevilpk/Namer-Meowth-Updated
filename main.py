@@ -161,6 +161,7 @@ async def on_ready():
         'cogs.collection',
         'cogs.shiny_count',
         'cogs.type_region',
+        'cogs.release_evolve',
         'cogs.shiny_hunt',
         'cogs.settings',
         'cogs.incense',
