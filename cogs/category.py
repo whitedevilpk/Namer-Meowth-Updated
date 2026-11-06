@@ -358,16 +358,15 @@ def _cp_emoji(name: str) -> str:
     return _CP_EMOJI_BY_LABEL.get(name.lower()) or "📦"
 
 
-def _cp_state(pokemon: list, owned: set) -> str:
-    """'on' = every Pokémon of the category is in your collection, otherwise 'off'."""
-    if pokemon and all(p in owned for p in pokemon):
-        return "on"
-    return "off"
+def _cp_count(pokemon: list, owned: set) -> int:
+    """How many of the category's Pokémon are in your collection."""
+    return sum(1 for p in pokemon if p in owned)
 
 
 class CategoryToggleView(discord.ui.View):
-    """Green button = category is in your collection. Click to add it (like p!cat add)
-    or, if it's already fully there, to remove it (like p!cat remove)."""
+    """Green button = at least one Pokémon of the category is in your collection.
+    Clicking a grey button adds the whole category (like p!cat add); clicking a green
+    one removes the category's Pokémon from your collection (like p!cat remove)."""
 
     def __init__(self, cog: "Category", user_id: int, guild_id: int, categories: list, owned: set):
         super().__init__(timeout=90)
@@ -398,8 +397,8 @@ class CategoryToggleView(discord.ui.View):
 
         for cat in self._page_cats():
             name = cat["name"]
-            state = _cp_state(cat.get("pokemon", []), self.owned)
-            style = discord.ButtonStyle.success if state == "on" else discord.ButtonStyle.secondary
+            have = _cp_count(cat.get("pokemon", []), self.owned)
+            style = discord.ButtonStyle.success if have else discord.ButtonStyle.secondary
             btn = discord.ui.Button(
                 label=name if len(name) <= CP_MAX_LABEL else name[:CP_MAX_LABEL - 1] + "…",
                 emoji=_cp_emoji(name),
@@ -423,21 +422,25 @@ class CategoryToggleView(discord.ui.View):
             self.add_item(next_btn)
 
     def build_embed(self) -> discord.Embed:
-        dots = {"on": "🟢", "off": "⚫"}
         lines = []
         for cat in self._page_cats():
             pokemon = cat.get("pokemon", [])
+            have = _cp_count(pokemon, self.owned)
             lines.append(
-                f"{dots[_cp_state(pokemon, self.owned)]} {_cp_emoji(cat['name'])} "
-                f"**{cat['name']}** — {len(pokemon)} Pokémon"
+                f"{'🟢' if have else '⚫'} {_cp_emoji(cat['name'])} "
+                f"**{cat['name']}** — {have}/{len(pokemon)} added"
             )
         embed = discord.Embed(
             title="📦 Categories",
-            description="🟢 added • ⚫ not added\n\n" + "\n".join(lines),
+            description=(
+                "\n".join(lines)
+                + "\n\n*Note: some categories share the same Pokémon, so a category can show "
+                  "some Pokémon as added even if you never enabled it.*"
+            ),
             color=EMBED_COLOR,
         )
-        enabled = sum(1 for c in self.categories if _cp_state(c.get("pokemon", []), self.owned) == "on")
-        footer = f"Click a button to toggle • {enabled}/{len(self.categories)} added"
+        enabled = sum(1 for c in self.categories if _cp_count(c.get("pokemon", []), self.owned))
+        footer = f"Click a button to toggle • {enabled}/{len(self.categories)} categories with Pokémon added"
         if self.total_pages > 1:
             footer += f" • Page {self.page + 1}/{self.total_pages}"
         embed.set_footer(text=footer)
@@ -468,7 +471,7 @@ class CategoryToggleView(discord.ui.View):
                 notice = f"❌ Category `{name}` no longer exists."
             elif pokemon:
                 owned = set(await self.cog.db.get_user_collection(self.user_id, self.guild_id))
-                if all(p in owned for p in pokemon):
+                if _cp_count(pokemon, owned):       # any added -> remove them
                     await self.cog.db.remove_pokemon_from_collection(self.user_id, self.guild_id, pokemon)
                 else:
                     await self.cog.db.add_pokemon_to_collection(self.user_id, self.guild_id, pokemon)
