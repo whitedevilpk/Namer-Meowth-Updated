@@ -342,6 +342,24 @@ class _ListView(_OwnedView):
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
 
+class _AddBackView(_OwnedView):
+    """'Add Back' button under a release/evolve result: puts the IDs that were just
+    taken back onto the list (evolve entries get their original 1x/2x uses back)."""
+
+    def __init__(self, cog: "ReleaseEvolve", kind: _Kind, owner_id: int, taken: list[dict]):
+        super().__init__(owner_id, timeout=600)
+        self.cog, self.kind, self.taken = cog, kind, taken
+
+    @discord.ui.button(label="↩️ Add Back", style=discord.ButtonStyle.success)
+    async def add_back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button.disabled = True          # one use only, so it can't be added twice
+        button.label = "✅ Added Back"
+        await interaction.response.edit_message(view=self)
+        text = await self.cog.restore(self.kind, interaction.user.id, self.taken)
+        await interaction.followup.send(text, ephemeral=True, allowed_mentions=NO_MENTIONS)
+        self.stop()
+
+
 # ─────────────────────────────────────────────────────────────────────
 #  Modals
 # ─────────────────────────────────────────────────────────────────────
@@ -423,8 +441,20 @@ class _TakeModal(discord.ui.Modal):
         result = await self.cog.take(self.kind, interaction.user.id, count)
         if isinstance(result, str):
             await interaction.response.send_message(result, ephemeral=True)
-        else:
-            await _isend_embeds(interaction, result)
+            return
+        embeds, taken = result
+        view = _AddBackView(self.cog, self.kind, interaction.user.id, taken)
+        for i, embed in enumerate(embeds):
+            last = i == len(embeds) - 1
+            sent = await _isend(interaction, embed=embed, view=view if last else None)
+            if last:
+                if isinstance(sent, discord.WebhookMessage):
+                    view.message = sent
+                else:
+                    try:
+                        view.message = await interaction.original_response()
+                    except discord.HTTPException:
+                        pass
 
 
 class _PanelView(_OwnedView):
@@ -600,7 +630,7 @@ class ReleaseEvolve(commands.Cog):
         return f"✅ Cleared all {len(items)} ID(s) from your {kind.name} list!"
 
     async def take(self, kind: _Kind, user_id: int, count: int):
-        """Pop `count` IDs (1x entries first). Returns embeds to send, or an error string."""
+        """Pop `count` IDs (1x entries first). Returns (embeds, taken items), or an error string."""
         if self._col(kind) is None:
             return _NO_DB
         if count <= 0:
@@ -626,7 +656,24 @@ class ReleaseEvolve(commands.Cog):
             footer = f"{count} ID(s) used ({', '.join(parts)}) • {len(rest)} remaining"
         else:
             footer = f"{count} ID(s) removed from your {kind.name} list • {len(rest)} remaining"
-        return _command_embeds(kind, [x["id"] for x in taken], footer)
+        return _command_embeds(kind, [x["id"] for x in taken], footer), taken
+
+    async def restore(self, kind: _Kind, user_id: int, taken: list[dict]) -> str:
+        """Put IDs from a previous take() back on the list. An ID that's still there
+        (an evolve 2x entry left with 1 use) gets its original use count back."""
+        if self._col(kind) is None:
+            return _NO_DB
+        async with self._lock(kind, user_id):
+            items = await self._load(kind, user_id)
+            index = {x["id"]: n for n, x in enumerate(items)}
+            for x in taken:
+                if x["id"] in index:
+                    items[index[x["id"]]]["uses"] = x["uses"]
+                else:
+                    index[x["id"]] = len(items)
+                    items.append({"id": x["id"], "uses": x["uses"]})
+            await self._save(kind, user_id, items)
+        return f"✅ Added back {len(taken)} ID(s) to your {kind.name} list! Total IDs: {len(items)}"
 
     async def build_list(self, kind: _Kind, user_id: int):
         """Returns (embed, view_or_None), or an error string."""
@@ -819,11 +866,17 @@ class ReleaseEvolve(commands.Cog):
         if isinstance(result, str):
             await _reply(ctx, result, ephemeral=True)
             return
-        for i, embed in enumerate(result):
+        embeds, taken = result
+        view = _AddBackView(self, kind, ctx.author.id, taken)
+        for i, embed in enumerate(embeds):
+            last = i == len(embeds) - 1
+            kwargs = {"view": view} if last else {}
             if i == 0:
-                await _reply(ctx, embed=embed)
+                message = await _reply(ctx, embed=embed, **kwargs)
             else:
-                await ctx.send(embed=embed, allowed_mentions=NO_MENTIONS)
+                message = await ctx.send(embed=embed, allowed_mentions=NO_MENTIONS, **kwargs)
+            if last:
+                view.message = message
 
     # ── Release commands ─────────────────────────────────────────────
 
