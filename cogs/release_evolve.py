@@ -149,17 +149,40 @@ def _command_embeds(kind: _Kind, ids: list[str], footer: str) -> list[discord.Em
 #   `39556693`  ...   ` 9593`  ...   **`586470`**  ...
 _ID_LINE = re.compile(r"^\*{0,2}`\s*(\d+)\s*`\*{0,2}")
 
+# Rows end with the IV percentage, e.g. "•Lvl. 20•35.48%"
+_IV_PCT = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*$")
+
+SHINY_MARK = "✨"       # rows containing this are skipped
+MIN_IV = 20.0           # only IDs with IV between MIN_IV and MAX_IV (inclusive) are extracted
+MAX_IV = 80.0
+
+
+def _row_allowed(line: str) -> bool:
+    """False for shiny rows and for rows whose IV% is outside MIN_IV..MAX_IV."""
+    if SHINY_MARK in line:
+        return False
+    m = _IV_PCT.search(line)
+    if m is not None:
+        iv = float(m.group(1))
+        if iv < MIN_IV or iv > MAX_IV:
+            return False
+    return True
+
 
 def _extract_ids(message: discord.Message) -> list[str]:
     """IDs from a message's embeds, top-to-bottom, de-duplicated.
 
     Only the first backticked number of each line counts, so stray numbers elsewhere
     on a row (levels, prices…) can never end up on a release list by accident.
+    Shiny (✨) rows and rows with IV below MIN_IV or above MAX_IV are skipped.
     """
     ids, seen = [], set()
     for embed in message.embeds:
         for line in (embed.description or "").splitlines():
-            m = _ID_LINE.match(line.strip())
+            line = line.strip()
+            if not _row_allowed(line):
+                continue
+            m = _ID_LINE.match(line)
             if m and m.group(1) not in seen:
                 seen.add(m.group(1))
                 ids.append(m.group(1))
