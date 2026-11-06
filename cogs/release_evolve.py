@@ -16,6 +16,7 @@ Commands (prefix + aliases; aliases are editable in ALIASES below)
     releaseclear / rclear   releaselist / rlist
     evolve   <count>               hybrid: also /evolve
     evolvepanel / epanel    evolveadd / eadd    evolveremove / eremove  (--once)
+                            evolveadd asks "once or twice?" unless --once / --twice is given
     evolveclear / eclear    evolvelist / elist
     idmigrate  (owner only) — copy lists from the old helper bot's database
 
@@ -113,6 +114,24 @@ def _invalid_note(invalid: list[str]) -> str:
 def _split_once_flag(args) -> tuple[list[str], bool]:
     tokens = [a for a in args if a.lower() != "--once"]
     return tokens, len(tokens) != len(args)
+
+
+def _split_uses_flag(args) -> tuple[list[str], Optional[int]]:
+    """Read --once / --twice from evolveadd. Returns (other tokens, uses).
+    uses is 1 for --once, 2 for --twice, or None when no (or conflicting) flags were
+    given, which means the bot should ask the user."""
+    tokens, once, twice = [], False, False
+    for a in args:
+        low = a.lower()
+        if low == "--once":
+            once = True
+        elif low == "--twice":
+            twice = True
+        else:
+            tokens.append(a)
+    if once == twice:           # neither flag, or both flags
+        return tokens, None
+    return tokens, 1 if once else 2
 
 
 def _command_embeds(kind: _Kind, ids: list[str], footer: str) -> list[discord.Embed]:
@@ -340,6 +359,34 @@ class _ListView(_OwnedView):
         self.page = min(len(self._pages[self.current]) - 1, self.page + 1)
         self._sync()
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+
+class _UsesView(_OwnedView):
+    """Asks: can these evolve IDs be used once or twice? self.uses is 1, 2 or None
+    (None = cancelled or no answer in time)."""
+
+    def __init__(self, owner_id: int):
+        super().__init__(owner_id, timeout=60)
+        self.uses: Optional[int] = None
+
+    async def _finish(self, interaction: discord.Interaction, uses: Optional[int]):
+        self.uses = uses
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+    @discord.ui.button(label="Once (1x)", style=discord.ButtonStyle.primary)
+    async def once_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._finish(interaction, 1)
+
+    @discord.ui.button(label="Twice (2x)", style=discord.ButtonStyle.success)
+    async def twice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._finish(interaction, 2)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._finish(interaction, None)
 
 
 class _AddBackView(_OwnedView):
@@ -719,8 +766,10 @@ class ReleaseEvolve(commands.Cog):
 
     async def _send_add(self, ctx: commands.Context, kind: _Kind, args):
         """Add IDs typed after the command and/or read from a replied-to embed."""
-        tokens, once = _split_once_flag(args) if kind.has_uses else (list(args), False)
-        uses = 1 if once else 2
+        if kind.has_uses:
+            tokens, uses = _split_uses_flag(args)       # uses is None -> ask the user below
+        else:
+            tokens, uses = list(args), 1
 
         source, error = await self._reply_source(ctx)
         if error:
@@ -736,13 +785,55 @@ class ReleaseEvolve(commands.Cog):
                                   f"or reply to a Pokétwo embed with `{kind.name}add`.")
             return
 
-        if not extracted:       # plain typed IDs, nothing to watch
-            await _reply(ctx, await self.add(kind, ctx.author.id, tokens, uses))
-            return
-
         if self._col(kind) is None:
             await _reply(ctx, _NO_DB)
             return
+
+        # Evolve IDs: ask whether they can evolve once or twice (skipped when the
+        # user already typed --once or --twice).
+        prompt: Optional[discord.Message] = None
+        if kind.has_uses and uses is None:
+            count = len(_parse_ids(list(tokens) + extracted)[0])
+            if not count:
+                await _reply(ctx, "❌ Please provide at least one valid numeric ID!"
+                                  + _invalid_note(_parse_ids(tokens)[1]))
+                return
+            view = _UsesView(ctx.author.id)
+            prompt = await _reply(ctx, (
+                f"🌱 **How many times can these {count} ID(s) be evolved?**\n"
+                "• **Once (1x)** — the Pokémon can only evolve one time\n"
+                "• **Twice (2x)** — the Pokémon can evolve two times "
+                "(if they are at the right level)\n\n"
+                "Pick one with the buttons below. This question expires in 60 seconds."
+            ), view=view)
+            view.message = prompt
+            await view.wait()
+            if view.uses is None:
+                try:
+                    await prompt.edit(content="❌ Nothing was saved (cancelled, or no answer in time). "
+                                              f"Run `{kind.name}add` again when you are ready.",
+                                      view=None, allowed_mentions=NO_MENTIONS)
+                except discord.HTTPException:
+                    pass
+                return
+            uses = view.uses
+            if source is not None:      # the embed may have changed while we waited
+                try:
+                    source = await source.channel.fetch_message(source.id)
+                    extracted = _extract_ids(source)
+                except discord.HTTPException:
+                    pass
+
+        async def respond(text: str) -> discord.Message:
+            if prompt is None:
+                return await _reply(ctx, text)
+            await prompt.edit(content=text, view=None, allowed_mentions=NO_MENTIONS)
+            return prompt
+
+        if not extracted:       # plain typed IDs, nothing to watch
+            await respond(await self.add(kind, ctx.author.id, tokens, uses))
+            return
+
         ids, invalid = _parse_ids(list(tokens) + extracted)
         new, total = await self._add_ids(kind, ctx.author.id, ids, uses)
 
@@ -750,7 +841,7 @@ class ReleaseEvolve(commands.Cog):
                        source_id=source.id, channel=source.channel,
                        note=_invalid_note(invalid), seen=set(extracted),
                        added=len(new), total=total)
-        watch.status = await _reply(ctx, self._watch_text(watch, watching=True))
+        watch.status = await respond(self._watch_text(watch, watching=True))
         self._start_watch(watch)
 
     # ── reply extraction + edit watching ─────────────────────────────
@@ -921,7 +1012,7 @@ class ReleaseEvolve(commands.Cog):
 
     @commands.command(name="evolveadd", aliases=ALIASES["evolveadd"])
     async def evolve_add(self, ctx: commands.Context, *args: str):
-        """Add IDs to your evolve list. Usage: evolveadd 123 456 (2 uses) | evolveadd 123 --once (1 use)"""
+        """Add IDs to your evolve list. The bot asks if they evolve once or twice. Usage: evolveadd 123 456 | evolveadd 123 --once (1 use) | evolveadd 123 --twice (2 uses)"""
         await self._send_add(ctx, EVOLVE, args)
 
     @commands.command(name="evolveremove", aliases=ALIASES["evolveremove"])
