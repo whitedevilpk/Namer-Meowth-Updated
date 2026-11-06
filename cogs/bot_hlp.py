@@ -1045,7 +1045,7 @@ class Help(commands.Cog):
                 color=EMBED_COLOR,
             )
             embed.add_field(
-                name=f"`{prefix}release <count>` / `{prefix}rel <count>`  •  `/release`",
+                name=f"`{prefix}release <count>`  •  `/release`",
                 value=(
                     "Take the first N IDs off your release list and output the Pokétwo release command\n"
                     f"• `{prefix}release 7`\n"
@@ -1054,7 +1054,7 @@ class Help(commands.Cog):
                 inline=False,
             )
             embed.add_field(
-                name=f"`{prefix}evolve <count>` / `{prefix}e <count>`  •  `/evolve`",
+                name=f"`{prefix}evolve <count>`  •  `/evolve`",
                 value=(
                     "Take N IDs off your evolve list and output the Pokétwo evolve command\n"
                     f"• `{prefix}evolve 7`\n"
@@ -1065,7 +1065,7 @@ class Help(commands.Cog):
             embed.add_field(
                 name="🔧 Panels",
                 value=(
-                    f"`{prefix}releasepanel` / `{prefix}relp`  •  `{prefix}evolvepanel` / `{prefix}ep`\n"
+                    f"`{prefix}releasepanel` / `{prefix}rpanel`  •  `{prefix}evolvepanel` / `{prefix}epanel`\n"
                     "Button panel to add, remove, view, clear and use IDs. Only you can press its buttons."
                 ),
                 inline=False,
@@ -1073,22 +1073,34 @@ class Help(commands.Cog):
             embed.add_field(
                 name="🔀 Release List",
                 value=(
-                    f"`{prefix}releaseadd <ids>` / `{prefix}ra` — add IDs\n"
-                    f"`{prefix}releaseremove <ids>` / `{prefix}rr` — remove IDs\n"
-                    f"`{prefix}releaselist` / `{prefix}rl` — view your list (paginated)\n"
-                    f"`{prefix}releaseclear` / `{prefix}rc` — empty the list"
+                    f"`{prefix}releaseadd <ids>` / `{prefix}radd` — add IDs\n"
+                    f"`{prefix}releaseadd` *(reply to a Pokétwo embed)* — grab the IDs straight from the embed\n"
+                    f"`{prefix}releaseremove <ids>` / `{prefix}rremove` — remove IDs\n"
+                    f"`{prefix}releaselist` / `{prefix}rlist` — view your list (paginated)\n"
+                    f"`{prefix}releaseclear` / `{prefix}rclear` — empty the list"
                 ),
                 inline=False,
             )
             embed.add_field(
                 name="🌱 Evolve List",
                 value=(
-                    f"`{prefix}evolveadd <ids>` / `{prefix}ea` — add IDs with **2 uses**\n"
+                    f"`{prefix}evolveadd <ids>` / `{prefix}eadd` — add IDs with **2 uses**\n"
                     f"`{prefix}evolveadd <ids> --once` — add IDs with **1 use** (priority)\n"
-                    f"`{prefix}evolveremove <ids>` / `{prefix}er` — remove IDs completely\n"
+                    f"`{prefix}evolveadd` *(reply to a Pokétwo embed)* — grab the IDs from the embed (add `--once` for 1 use)\n"
+                    f"`{prefix}evolveremove <ids>` / `{prefix}eremove` — remove IDs completely\n"
                     f"`{prefix}evolveremove <ids> --once` — remove just one use\n"
-                    f"`{prefix}evolvelist` / `{prefix}el` — view with 1x / 2x tabs\n"
-                    f"`{prefix}evolveclear` / `{prefix}ec` — empty the list"
+                    f"`{prefix}evolvelist` / `{prefix}elist` — view with 1x / 2x tabs\n"
+                    f"`{prefix}evolveclear` / `{prefix}eclear` — empty the list"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="📥 Reply to add",
+                value=(
+                    f"Reply to a Pokétwo `p!pokemon` / marketplace embed with `{prefix}releaseadd` or `{prefix}evolveadd` "
+                    "and every ID in it is added automatically. You can also type extra IDs after the command.\n"
+                    "The bot then **watches that message for edits** (e.g. flipping pages) and adds new IDs live. "
+                    "It stops after 2 minutes without an edit, or if the message is deleted."
                 ),
                 inline=False,
             )
@@ -1230,9 +1242,10 @@ class Help(commands.Cog):
             embed.add_field(
                 name="🔄 Release & Evolve",
                 value=(
-                    f"`{prefix}release <n>` / `{prefix}rel` • `{prefix}evolve <n>` / `{prefix}e` — also `/release` `/evolve`\n"
-                    f"`{prefix}releaseadd/remove/list/clear` (`ra rr rl rc`) • `{prefix}releasepanel` (`relp`)\n"
-                    f"`{prefix}evolveadd/remove/list/clear` (`ea er el ec`, `--once`) • `{prefix}evolvepanel` (`ep`)"
+                    f"`{prefix}release <n>` • `{prefix}evolve <n>` — also `/release` `/evolve`\n"
+                    f"`{prefix}releaseadd/remove/list/clear` (`radd rremove rlist rclear`) • `{prefix}releasepanel` (`rpanel`)\n"
+                    f"`{prefix}evolveadd/remove/list/clear` (`eadd eremove elist eclear`, `--once`) • `{prefix}evolvepanel` (`epanel`)\n"
+                    f"↳ `releaseadd` / `evolveadd` also work as a **reply to a Pokétwo embed** (IDs are read from it, edits are watched)"
                 ),
                 inline=False,
             )
