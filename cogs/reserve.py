@@ -2,6 +2,7 @@
 
 import math
 import re
+import traceback
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -29,7 +30,7 @@ REPLY_EMOJI = "<:reply:1503236369126916117>"
 # ---------------------------------------------------------------------------
 class ReserveListView(discord.ui.View):
     def __init__(self, author_id: int, pages: list[discord.Embed]):
-        super().__init__(timeout=60)  # reduced from 300
+        super().__init__(timeout=180)
         self.author_id = author_id
         self.pages = pages
         self.current = 0
@@ -40,7 +41,7 @@ class ReserveListView(discord.ui.View):
         self.prev_btn.disabled = self.current <= 0
         self.next_btn.disabled = self.current >= len(self.pages) - 1
 
-    async def _check(self, interaction: discord.Interaction) -> bool:
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
             await interaction.response.send_message(
                 "This button isn't for you!", ephemeral=True
@@ -48,29 +49,49 @@ class ReserveListView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.primary)
-    async def prev_btn(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ):
-        if not await self._check(interaction):
+    async def _turn_page(self, interaction: discord.Interaction, delta: int):
+        # Views that already timed out have no pages left; always answer the
+        # interaction so Discord never shows "interaction failed".
+        if not self.pages:
+            await interaction.response.defer()
             return
-        self.current = max(0, self.current - 1)
+        self.current = max(0, min(len(self.pages) - 1, self.current + delta))
         self._update_buttons()
         await interaction.response.edit_message(
             embed=self.pages[self.current], view=self
         )
 
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.primary)
+    async def prev_btn(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        await self._turn_page(interaction, -1)
+
     @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.primary)
     async def next_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
-        if not await self._check(interaction):
-            return
-        self.current = min(len(self.pages) - 1, self.current + 1)
-        self._update_buttons()
-        await interaction.response.edit_message(
-            embed=self.pages[self.current], view=self
-        )
+        await self._turn_page(interaction, +1)
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ):
+        # Surface the real traceback in the console instead of failing silently.
+        traceback.print_exception(type(error), error, error.__traceback__)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "❌ Something went wrong with that button.", ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Something went wrong with that button.", ephemeral=True
+                )
+        except discord.HTTPException:
+            pass
 
     async def on_timeout(self):
         self.clear_items()
