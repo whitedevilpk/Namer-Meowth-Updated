@@ -131,7 +131,14 @@ def _command_embeds(kind: _Kind, ids: list[str], footer: str) -> list[discord.Em
 
     embeds = []
     for n, chunk in enumerate(chunks, 1):
-        embed = discord.Embed(description=f"```\n{head}{' '.join(chunk)}\n```", color=EMBED_COLOR)
+        command = f"{head}{' '.join(chunk)}"
+        # triple backticks = code block with a copy button on PC; single backticks = inline
+        # code that's easier to tap/copy on mobile. Two copies of a ≤1900-char command fit
+        # comfortably inside the 4096-char embed description.
+        embed = discord.Embed(
+            description=f"```\n{command}\n```\n📱 **Mobile:**\n`{command}`",
+            color=EMBED_COLOR,
+        )
         part = f"Part {n}/{len(chunks)} • " if len(chunks) > 1 else ""
         embed.set_footer(text=part + footer)
         embeds.append(embed)
