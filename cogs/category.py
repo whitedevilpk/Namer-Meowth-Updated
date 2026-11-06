@@ -359,11 +359,10 @@ def _cp_emoji(name: str) -> str:
 
 
 def _cp_state(pokemon: list, owned: set) -> str:
-    """'on' = you have all of it, 'partial' = some, 'off' = none."""
-    have = sum(1 for p in pokemon if p in owned)
-    if pokemon and have == len(pokemon):
+    """'on' = every Pokémon of the category is in your collection, otherwise 'off'."""
+    if pokemon and all(p in owned for p in pokemon):
         return "on"
-    return "partial" if have else "off"
+    return "off"
 
 
 class CategoryToggleView(discord.ui.View):
@@ -400,10 +399,7 @@ class CategoryToggleView(discord.ui.View):
         for cat in self._page_cats():
             name = cat["name"]
             state = _cp_state(cat.get("pokemon", []), self.owned)
-            style = {
-                "on": discord.ButtonStyle.success,
-                "partial": discord.ButtonStyle.primary,
-            }.get(state, discord.ButtonStyle.secondary)
+            style = discord.ButtonStyle.success if state == "on" else discord.ButtonStyle.secondary
             btn = discord.ui.Button(
                 label=name if len(name) <= CP_MAX_LABEL else name[:CP_MAX_LABEL - 1] + "…",
                 emoji=_cp_emoji(name),
@@ -427,7 +423,7 @@ class CategoryToggleView(discord.ui.View):
             self.add_item(next_btn)
 
     def build_embed(self) -> discord.Embed:
-        dots = {"on": "🟢", "partial": "🟡", "off": "⚫"}
+        dots = {"on": "🟢", "off": "⚫"}
         lines = []
         for cat in self._page_cats():
             pokemon = cat.get("pokemon", [])
@@ -437,7 +433,7 @@ class CategoryToggleView(discord.ui.View):
             )
         embed = discord.Embed(
             title="📦 Categories",
-            description="🟢 added • 🟡 partly added • ⚫ not added\n\n" + "\n".join(lines),
+            description="🟢 added • ⚫ not added\n\n" + "\n".join(lines),
             color=EMBED_COLOR,
         )
         enabled = sum(1 for c in self.categories if _cp_state(c.get("pokemon", []), self.owned) == "on")
