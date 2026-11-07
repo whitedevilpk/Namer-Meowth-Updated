@@ -75,14 +75,14 @@ SECONDARY_REPO_LFS = "https://media.githubusercontent.com/media/cynthiaofpower/m
 
 # .onnx files are stored in Git LFS — must use media URL
 # .json files are plain text — use raw URL
-PRIMARY_ONNX_URL     = f"{PRIMARY_REPO_LFS}/hallodated.onnx"
-PRIMARY_LABELS_URL   = f"{PRIMARY_REPO_RAW}/hallodated.json"
+PRIMARY_ONNX_URL     = f"{PRIMARY_REPO_LFS}/hallotwo.onnx"
+PRIMARY_LABELS_URL   = f"{PRIMARY_REPO_RAW}/hallotwo.json"
 SECONDARY_ONNX_URL   = f"{SECONDARY_REPO_LFS}/halloween.onnx"
 SECONDARY_LABELS_URL = f"{SECONDARY_REPO_RAW}/event_labels.json"
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "model_cache")
-PRIMARY_ONNX_PATH    = os.path.join(CACHE_DIR, "vivillon.onnx")
-PRIMARY_LABELS_PATH  = os.path.join(CACHE_DIR, "vivillon.json")
+PRIMARY_ONNX_PATH    = os.path.join(CACHE_DIR, "hallotwo.onnx")
+PRIMARY_LABELS_PATH  = os.path.join(CACHE_DIR, "hallotwo.json")
 SECONDARY_ONNX_PATH  = os.path.join(CACHE_DIR, "halloween.onnx")
 SECONDARY_LABELS_PATH = os.path.join(CACHE_DIR, "event_labels.json")
 
@@ -103,7 +103,7 @@ LAZY_LOAD_MODELS = False
 # With SECONDARY disabled, predictions use the primary result only.
 # -----------------------------------------------------------------------
 ENABLE_PRIMARY_MODEL   = True
-ENABLE_SECONDARY_MODEL = True
+ENABLE_SECONDARY_MODEL = False
 
 # -----------------------------------------------------------------------
 # Confidence thresholds — edit these to tune prediction behaviour
