@@ -100,8 +100,8 @@ LAZY_LOAD_MODELS = False
 # Otherwise try secondary model if >= SECONDARY_CONFIDENCE_THRESHOLD.
 # If neither meets their threshold, fall back to the primary result anyway.
 # -----------------------------------------------------------------------
-PRIMARY_CONFIDENCE_THRESHOLD   = 94.0  # %
-SECONDARY_CONFIDENCE_THRESHOLD = 90.0  # %
+PRIMARY_CONFIDENCE_THRESHOLD   = 85.0  # %
+SECONDARY_CONFIDENCE_THRESHOLD = 80.0  # %
 
 # -----------------------------------------------------------------------
 # Pokemon-specific secondary model list
@@ -110,7 +110,7 @@ SECONDARY_CONFIDENCE_THRESHOLD = 90.0  # %
 # Add Pokemon names exactly as they appear in primary model's class labels.
 # -----------------------------------------------------------------------
 SECONDARY_MODEL_POKEMON = {
-    "Pom Oricorio",
+    "Meloetta",
 }
 
 
