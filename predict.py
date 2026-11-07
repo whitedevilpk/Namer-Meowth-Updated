@@ -95,6 +95,17 @@ SECONDARY_LABELS_PATH = os.path.join(CACHE_DIR, "event_labels.json")
 LAZY_LOAD_MODELS = False
 
 # -----------------------------------------------------------------------
+# Model enable toggles
+# True  → model is downloaded, loaded and used.
+# False → model is completely skipped (not downloaded, not loaded, not run).
+# Primary is the main model; disabling it is only sensible if you also
+# want predictions to fail, so at least one should normally stay True.
+# With SECONDARY disabled, predictions use the primary result only.
+# -----------------------------------------------------------------------
+ENABLE_PRIMARY_MODEL   = True
+ENABLE_SECONDARY_MODEL = True
+
+# -----------------------------------------------------------------------
 # Confidence thresholds — edit these to tune prediction behaviour
 # If primary model confidence >= PRIMARY_CONFIDENCE_THRESHOLD, use it directly.
 # Otherwise try secondary model if >= SECONDARY_CONFIDENCE_THRESHOLD.
@@ -210,6 +221,11 @@ class ModelDownloader:
             (SECONDARY_LABELS_URL,  SECONDARY_LABELS_PATH),
         ]
 
+        if not ENABLE_PRIMARY_MODEL:
+            primary_downloads = []
+        if not ENABLE_SECONDARY_MODEL:
+            secondary_downloads = []
+
         # Primary downloads are required — raise if any fail
         primary_tasks = []
         for url, path in primary_downloads:
@@ -283,19 +299,27 @@ class Prediction:
 
         await ModelDownloader.ensure_models_cached(session)
 
-        # Load class names
-        with open(PRIMARY_LABELS_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if isinstance(data, dict):
-                sorted_keys = sorted(data.keys(), key=lambda x: int(x))
-                self.primary_class_names = [data[k].strip('"') for k in sorted_keys]
-            elif isinstance(data, list):
-                self.primary_class_names = [name.strip('"') for name in data]
-            else:
-                raise ValueError("labels_v2.json must be a list or dict")
+        if not ENABLE_PRIMARY_MODEL and not ENABLE_SECONDARY_MODEL:
+            raise RuntimeError("Both ENABLE_PRIMARY_MODEL and ENABLE_SECONDARY_MODEL are False — nothing to load.")
+
+        # Load class names (primary)
+        if ENABLE_PRIMARY_MODEL:
+            with open(PRIMARY_LABELS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    sorted_keys = sorted(data.keys(), key=lambda x: int(x))
+                    self.primary_class_names = [data[k].strip('"') for k in sorted_keys]
+                elif isinstance(data, list):
+                    self.primary_class_names = [name.strip('"') for name in data]
+                else:
+                    raise ValueError("labels_v2.json must be a list or dict")
+        else:
+            print("[INIT] ENABLE_PRIMARY_MODEL is False — primary model skipped.")
 
         # Secondary labels — optional
         try:
+            if not ENABLE_SECONDARY_MODEL:
+                raise RuntimeError("ENABLE_SECONDARY_MODEL is False — secondary model skipped.")
             with open(SECONDARY_LABELS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
@@ -327,15 +351,18 @@ class Prediction:
         sess_opts.enable_mem_pattern = False
         sess_opts.enable_cpu_mem_arena = False
 
-        self.primary_session = ort.InferenceSession(
-            PRIMARY_ONNX_PATH,
-            sess_options=sess_opts,
-            providers=providers
-        )
-        print(f"✅ Primary model initialized: {len(self.primary_class_names)} classes")
+        if ENABLE_PRIMARY_MODEL:
+            self.primary_session = ort.InferenceSession(
+                PRIMARY_ONNX_PATH,
+                sess_options=sess_opts,
+                providers=providers
+            )
+            print(f"✅ Primary model initialized: {len(self.primary_class_names)} classes")
 
         # Secondary model init — optional
         try:
+            if not ENABLE_SECONDARY_MODEL:
+                raise RuntimeError("disabled via ENABLE_SECONDARY_MODEL")
             sess_opts2 = ort.SessionOptions()
             sess_opts2.intra_op_num_threads = 1
             sess_opts2.inter_op_num_threads = 1
@@ -351,8 +378,12 @@ class Prediction:
             )
             print(f"✅ Secondary model initialized: {len(self.secondary_class_names)} classes")
         except Exception as e:
-            print(f"⚠️ Secondary model unavailable (non-fatal): {e}")
+            if ENABLE_SECONDARY_MODEL:
+                print(f"⚠️ Secondary model unavailable (non-fatal): {e}")
+            else:
+                print("[INIT] Secondary model disabled — skipping.")
             self.secondary_session = None
+            self.secondary_class_names = None
 
         self.models_initialized = True
         self.allow_auto_load = True
@@ -582,12 +613,28 @@ class Prediction:
 
         try:
             loop = self._loop or asyncio.get_event_loop()
-            primary_image = self._preprocess_from_bytes(raw_bytes, 224, 224)
 
             secondary_available = (
+                ENABLE_SECONDARY_MODEL and
                 self.secondary_session is not None and
                 self.secondary_class_names is not None
             )
+
+            # ── Secondary-only mode (primary disabled) ──────────────────────────
+            if not ENABLE_PRIMARY_MODEL:
+                if not secondary_available:
+                    raise RuntimeError("Primary model is disabled and secondary model is unavailable.")
+                secondary_image = self._preprocess_from_bytes(raw_bytes, 224, 224)
+                secondary_name, secondary_prob = await loop.run_in_executor(
+                    self._inference_pool, self._run_inference, self.secondary_session, secondary_image, self.secondary_class_names
+                )
+                del secondary_image
+                confidence = f"{secondary_prob * 100:.2f}%"
+                self.cache.set(cache_key, (secondary_name, confidence, "secondary_only"))
+                self._maybe_gc()
+                return secondary_name, confidence
+
+            primary_image = self._preprocess_from_bytes(raw_bytes, 224, 224)
 
             # ── Step 1: always run primary first ────────────────────────────────
             primary_name, primary_prob = await loop.run_in_executor(
