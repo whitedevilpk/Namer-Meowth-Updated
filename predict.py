@@ -75,8 +75,8 @@ SECONDARY_REPO_LFS = "https://media.githubusercontent.com/media/cynthiaofpower/m
 
 # .onnx files are stored in Git LFS — must use media URL
 # .json files are plain text — use raw URL
-PRIMARY_ONNX_URL     = f"{PRIMARY_REPO_LFS}/vivillon.onnx"
-PRIMARY_LABELS_URL   = f"{PRIMARY_REPO_RAW}/vivillon.json"
+PRIMARY_ONNX_URL     = f"{PRIMARY_REPO_LFS}/hallodated.onnx"
+PRIMARY_LABELS_URL   = f"{PRIMARY_REPO_RAW}/hallodated.json"
 SECONDARY_ONNX_URL   = f"{SECONDARY_REPO_LFS}/halloween.onnx"
 SECONDARY_LABELS_URL = f"{SECONDARY_REPO_RAW}/event_labels.json"
 
@@ -100,8 +100,8 @@ LAZY_LOAD_MODELS = False
 # Otherwise try secondary model if >= SECONDARY_CONFIDENCE_THRESHOLD.
 # If neither meets their threshold, fall back to the primary result anyway.
 # -----------------------------------------------------------------------
-PRIMARY_CONFIDENCE_THRESHOLD   = 85.0  # %
-SECONDARY_CONFIDENCE_THRESHOLD = 80.0  # %
+PRIMARY_CONFIDENCE_THRESHOLD   = 90.0  # %
+SECONDARY_CONFIDENCE_THRESHOLD = 95.0  # %
 
 # -----------------------------------------------------------------------
 # Pokemon-specific secondary model list
