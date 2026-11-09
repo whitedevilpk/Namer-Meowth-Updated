@@ -1,6 +1,7 @@
 """Pokemon prediction and auto-detection"""
 import json
 import os
+import re
 import discord
 import asyncio
 from discord.ext import commands, tasks
@@ -14,6 +15,67 @@ from utils import (
 )
 from config import POKETWO_USER_ID, PREDICTION_CONFIDENCE
 from guild_cache import GuildCache
+
+# ---------------------------------------------------------------------------
+# Components V2 support (discord.py 2.6+)
+# V2 messages have no embeds/content; text and images live in a component tree
+# (Container -> Section / TextDisplay / MediaGallery / Thumbnail ...).
+# Helpers are duck-typed on purpose so they also work on older discord.py.
+# ---------------------------------------------------------------------------
+_IMAGE_EXT_RE = re.compile(r"\.(?:png|jpe?g|gif|webp)(?:[?#].*)?$", re.IGNORECASE)
+_IMAGE_URL_RE = re.compile(r'https?://[^\s<>"]+?\.(?:png|jpg|jpeg|gif|webp)', re.IGNORECASE)
+
+SPAWN_TITLE = "A wild pokémon has appeared!"
+NEW_SPAWN_TITLE = "A new wild pokémon has appeared!"
+
+
+def _component_texts(components) -> list:
+    """Text of every TextDisplay in a component tree."""
+    texts = []
+    for comp in components or []:
+        content = getattr(comp, "content", None)
+        if isinstance(content, str) and content:
+            texts.append(content)
+        texts.extend(_component_texts(getattr(comp, "children", None)))
+        accessory = getattr(comp, "accessory", None)
+        if accessory is not None:
+            texts.extend(_component_texts([accessory]))
+    return texts
+
+
+def _component_image_urls(components) -> list:
+    """Media URLs (thumbnails, media galleries, section accessories) in a component tree."""
+    urls = []
+    for comp in components or []:
+        url = getattr(getattr(comp, "media", None), "url", None)
+        if isinstance(url, str):
+            urls.append(url)
+        for item in getattr(comp, "items", None) or []:
+            url = getattr(getattr(item, "media", None), "url", None)
+            if isinstance(url, str):
+                urls.append(url)
+        urls.extend(_component_image_urls(getattr(comp, "children", None)))
+        accessory = getattr(comp, "accessory", None)
+        if accessory is not None:
+            urls.extend(_component_image_urls([accessory]))
+    return urls
+
+
+def _is_spawn_message(message) -> bool:
+    """True for a Poketwo 'A wild pokémon has appeared!' message (embed or V2)."""
+    if message.embeds:
+        title = message.embeds[0].title
+        if title and (title == SPAWN_TITLE or title.endswith(NEW_SPAWN_TITLE)):
+            return True
+
+    for text in _component_texts(getattr(message, "components", None)):
+        for line in text.splitlines():
+            # drop markdown heading/quote markers and bold/italic wrappers
+            line = re.sub(r"^[#\-\s*_>]+|[\s*_]+$", "", line)
+            if line == SPAWN_TITLE or line.endswith(NEW_SPAWN_TITLE):
+                return True
+    return False
+
 
 # Hardcoded channel ID where any image will be auto-predicted
 AUTO_PREDICT_CHANNEL_ID = 1453015934393651272
@@ -221,11 +283,23 @@ class Prediction(commands.Cog):
                 if embed.thumbnail:
                     return embed.thumbnail.url
 
-        import re
-        url_pattern = r'https?://[^\s<>"]+?\.(?:png|jpg|jpeg|gif|webp)'
-        urls = re.findall(url_pattern, message.content, re.IGNORECASE)
+        # Components V2 (no embeds): look at media galleries / thumbnails
+        media_urls = _component_image_urls(getattr(message, "components", None))
+        for url in media_urls:
+            if _IMAGE_EXT_RE.search(url):
+                return url
+        if media_urls:
+            return media_urls[0]
+
+        urls = _IMAGE_URL_RE.findall(message.content or "")
         if urls:
             return urls[0]
+
+        # Image links written inside V2 text displays
+        for text in _component_texts(getattr(message, "components", None)):
+            urls = _IMAGE_URL_RE.findall(text)
+            if urls:
+                return urls[0]
 
         url = await get_image_url_from_message(message)
         if url:
@@ -714,13 +788,7 @@ class Prediction(commands.Cog):
 
         # ---- Poketwo spawn detection in other channels --------------------
         elif message.author.id == POKETWO_USER_ID:
-            if not message.embeds:
-                return
-            embed = message.embeds[0]
-            if not embed.title:
-                return
-            if not (embed.title == "A wild pokémon has appeared!" or
-                    embed.title.endswith("A new wild pokémon has appeared!")):
+            if not _is_spawn_message(message):
                 return
             if not self.predictor.models_initialized:
                 return
