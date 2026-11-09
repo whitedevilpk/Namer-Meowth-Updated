@@ -166,7 +166,7 @@ def _command_embeds(kind: _Kind, ids: list[str], footer: str) -> list[discord.Em
 
 # Pokétwo list / marketplace / gigantamax embeds all start each row with the ID in backticks:
 #   `39556693`  ...   ` 9593`  ...   **`586470`**  ...
-_ID_LINE = re.compile(r"^\*{0,2}`\s*(\d+)\s*`\*{0,2}")
+_ID_LINE = re.compile(r"^(?:[-•>]\s+)?\*{0,2}`\s*(\d+)\s*`\*{0,2}")
 
 # Rows end with the IV percentage, e.g. "•Lvl. 20•35.48%"
 _IV_PCT = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*$")
@@ -188,16 +188,32 @@ def _row_allowed(line: str) -> bool:
     return True
 
 
+def _component_texts(components) -> list[str]:
+    """Collect the text of every TextDisplay in a Components V2 tree (discord.py 2.6+)."""
+    texts: list[str] = []
+    for comp in components or []:
+        content = getattr(comp, "content", None)
+        if isinstance(content, str) and content:
+            texts.append(content)
+        texts.extend(_component_texts(getattr(comp, "children", None)))
+        accessory = getattr(comp, "accessory", None)
+        if accessory is not None:
+            texts.extend(_component_texts([accessory]))
+    return texts
+
+
 def _extract_ids(message: discord.Message) -> list[str]:
-    """IDs from a message's embeds, top-to-bottom, de-duplicated.
+    """IDs from a message's embeds or Components V2 text, top-to-bottom, de-duplicated.
 
     Only the first backticked number of each line counts, so stray numbers elsewhere
     on a row (levels, prices…) can never end up on a release list by accident.
     Shiny (✨) rows and rows with IV below MIN_IV or above MAX_IV are skipped.
     """
     ids, seen = [], set()
-    for embed in message.embeds:
-        for line in (embed.description or "").splitlines():
+    blocks = [e.description or "" for e in message.embeds]
+    blocks.extend(_component_texts(getattr(message, "components", None)))
+    for block in blocks:
+        for line in block.splitlines():
             line = line.strip()
             if not _row_allowed(line):
                 continue
@@ -779,7 +795,7 @@ class ReleaseEvolve(commands.Cog):
 
         if not tokens and not extracted:
             if source is not None:
-                await _reply(ctx, "❌ I couldn't find any Pokemon IDs in that message's embeds!")
+                await _reply(ctx, "❌ I couldn't find any Pokemon IDs in that message!")
             else:
                 await _reply(ctx, f"❌ Give me some IDs (`{kind.name}add 123 456`) "
                                   f"or reply to a Pokétwo embed with `{kind.name}add`.")
