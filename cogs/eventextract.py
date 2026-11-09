@@ -30,11 +30,11 @@ from config import EMBED_COLOR
 try:
     # Normal case: eventextract.py lives in the same package as poketools.py
     # (e.g. both under a `cogs` package), so relative import works.
-    from .poketools import _resolve_message
+    from .poketools import _resolve_message, _component_texts, _component_image_urls
 except ImportError:
     # Fallback for setups where cogs are loaded as top-level modules
     # rather than as a package (no relative import available).
-    from poketools import _resolve_message
+    from poketools import _resolve_message, _component_texts, _component_image_urls
 
 # ------------------------------------------------------------------ #
 #  Parsing helpers                                                     #
@@ -129,6 +129,93 @@ def parse_pokemon_embed(embed: discord.Embed) -> Optional[dict]:
 
 
 # ------------------------------------------------------------------ #
+#  Components V2 parsing                                               #
+# ------------------------------------------------------------------ #
+# Newer Pokétwo messages have no embed: the title, Region / Types / Names
+# sections and the image live in a component tree on `message.components`.
+
+# A section label on its own line, e.g. "**Region**", "Types:", "### Names",
+# optionally followed by the value on the same line ("**Region:** Kalos").
+_V2_LABEL_RE = re.compile(r"^[#*_\s]*(region|types|names)(?=[\s*_:]|$)[\s*_:]*(.*)$", re.IGNORECASE)
+
+
+def _clean_md(text: str) -> str:
+    return text.strip().strip("*_").strip()
+
+
+def parse_pokemon_components(message: discord.Message) -> Optional[dict]:
+    """Parse a Components V2 pokédex message into the same dict as parse_pokemon_embed."""
+    components = getattr(message, "components", None)
+    texts = _component_texts(components)
+    if not texts:
+        return None
+
+    lines = [ln for block in texts for ln in block.splitlines()]
+
+    dex_number = name = None
+    sections: Dict[str, List[str]] = {}
+    current: Optional[str] = None
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        if dex_number is None:
+            tm = TITLE_RE.search(line)
+            if tm:
+                dex_number = int(tm.group(1))
+                name = _clean_md(tm.group(2))
+                current = None
+                continue
+        lm = _V2_LABEL_RE.match(line)
+        if lm:
+            current = lm.group(1).lower()
+            sections.setdefault(current, [])
+            rest = lm.group(2).strip()
+            if rest:
+                sections[current].append(rest)
+            continue
+        if current is not None:
+            sections[current].append(line)
+
+    if dex_number is None:
+        return None
+
+    region = " ".join(_clean_md(x) for x in sections.get("region", [])).strip()
+    types = _parse_types("\n".join(_clean_md(x) for x in sections.get("types", [])))
+    other_names = _parse_other_names("\n".join(sections.get("names", [])))
+
+    cdn_number = None
+    for url in _component_image_urls(components):
+        cm = _CDN_RE.search(url)
+        if cm:
+            cdn_number = cm.group(1)
+            break
+
+    return {
+        "dex_number": dex_number,
+        "name": name,
+        "other_names": other_names,
+        "region": region,
+        "type1": types[0] if len(types) > 0 else "",
+        "type2": types[1] if len(types) > 1 else "",
+        "cdn_number": cdn_number,
+    }
+
+
+def parse_pokemon_message(message: discord.Message) -> Optional[dict]:
+    """Old-style embed first, then Components V2."""
+    if message.embeds:
+        parsed = parse_pokemon_embed(message.embeds[0])
+        if parsed is not None:
+            return parsed
+    return parse_pokemon_components(message)
+
+
+def _has_parsable_content(message: discord.Message) -> bool:
+    return bool(message.embeds or _component_texts(getattr(message, "components", None)))
+
+
+# ------------------------------------------------------------------ #
 #  File builders                                                       #
 # ------------------------------------------------------------------ #
 
@@ -212,10 +299,10 @@ class ExtractSession:
     progress_message: Optional[discord.Message] = None
     view: Optional["_StopView"] = None
 
-    def ingest(self, embed: discord.Embed) -> bool:
-        """Parse embed and store/update the entry. Returns True if a valid
-        pokémon entry was found (whether new or a re-capture)."""
-        parsed = parse_pokemon_embed(embed)
+    def ingest_message(self, message: discord.Message) -> bool:
+        """Parse a message (embed or Components V2) and store/update the entry.
+        Returns True if a valid pokémon entry was found (new or a re-capture)."""
+        parsed = parse_pokemon_message(message)
         if parsed is None:
             return False
         key = (parsed["dex_number"], parsed["name"])
@@ -298,8 +385,7 @@ class EventExtract(commands.Cog):
             owner_id=owner_id,
             jump_url=target.jump_url,
         )
-        if target.embeds:
-            session.ingest(target.embeds[0])
+        session.ingest_message(target)
 
         view = _StopView(self, target.id, owner_id)
         session.view = view
@@ -339,8 +425,8 @@ class EventExtract(commands.Cog):
         if target is None:
             await ctx.send("❌ Could not fetch the replied-to message.")
             return
-        if not target.embeds:
-            await ctx.send("❌ That message has no embeds to extract from.")
+        if not _has_parsable_content(target):
+            await ctx.send("❌ That message has no embeds or components to extract from.")
             return
 
         await self._start_session(ctx, target, ctx.author.id)
@@ -380,10 +466,7 @@ class EventExtract(commands.Cog):
         session = self.sessions.get(after.id)
         if session is None or not session.active:
             return
-        if not after.embeds:
-            return
-
-        captured = session.ingest(after.embeds[0])
+        captured = session.ingest_message(after)
         if not captured:
             return
 
@@ -451,8 +534,8 @@ async def start_event_extract_context_menu(interaction: discord.Interaction, mes
         await interaction.followup.send("❌ EventExtract cog is not loaded.", ephemeral=True)
         return
 
-    if not message.embeds:
-        await interaction.followup.send("❌ That message has no embeds to extract from.", ephemeral=True)
+    if not _has_parsable_content(message):
+        await interaction.followup.send("❌ That message has no embeds or components to extract from.", ephemeral=True)
         return
 
     await cog._start_session(interaction, message, interaction.user.id)
