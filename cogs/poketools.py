@@ -39,6 +39,52 @@ def _component_texts(components) -> list[str]:
 def _is_v2_message(message: discord.Message) -> bool:
     return bool(_component_texts(getattr(message, "components", None)))
 
+
+def _component_image_urls(components) -> list[str]:
+    """Collect media URLs (thumbnails, media galleries) from a Components V2 tree."""
+    urls: list[str] = []
+    for comp in components or []:
+        url = getattr(getattr(comp, "media", None), "url", None)
+        if isinstance(url, str):
+            urls.append(url)
+        for item in getattr(comp, "items", None) or []:
+            url = getattr(getattr(item, "media", None), "url", None)
+            if isinstance(url, str):
+                urls.append(url)
+        urls.extend(_component_image_urls(getattr(comp, "children", None)))
+        accessory = getattr(comp, "accessory", None)
+        if accessory is not None:
+            urls.extend(_component_image_urls([accessory]))
+    return urls
+
+
+def _dump_components(components, depth: int = 0) -> list[str]:
+    """Human-readable outline of a component tree (for debugging new layouts)."""
+    lines: list[str] = []
+    pad = "  " * depth
+    for comp in components or []:
+        line = f"{pad}{type(comp).__name__}"
+        content = getattr(comp, "content", None)
+        if isinstance(content, str):
+            line += f": {content!r}"
+        label = getattr(comp, "label", None)
+        if label:
+            line += f"  [label={label!r}]"
+        url = getattr(getattr(comp, "media", None), "url", None)
+        if url:
+            line += f"  [media={url}]"
+        lines.append(line)
+        for item in getattr(comp, "items", None) or []:
+            murl = getattr(getattr(item, "media", None), "url", None)
+            if murl:
+                lines.append(f"{pad}  item media={murl}")
+        accessory = getattr(comp, "accessory", None)
+        if accessory is not None:
+            lines.append(f"{pad}  accessory:")
+            lines.extend(_dump_components([accessory], depth + 2))
+        lines.extend(_dump_components(getattr(comp, "children", None), depth + 1))
+    return lines
+
 # ------------------------------------------------------------------ #
 #  Spawn rate data                                                     #
 # ------------------------------------------------------------------ #
@@ -606,6 +652,44 @@ def _date_response_text(dt: datetime.datetime) -> str:
 
 
 # ------------------------------------------------------------------ #
+#  ID output formatting                                                #
+# ------------------------------------------------------------------ #
+
+def _format_ids_messages(ids: list[str], max_len: int = 1900) -> list[str]:
+    """
+    Format IDs twice per message: a code block (PC — easy to select) and an
+    inline-code line (mobile — press and hold to copy).  Very long lists are
+    split into several messages so each stays under Discord's 2000-char limit.
+    """
+    # each ID appears twice, plus ~60 chars of wrapper text
+    budget = (max_len - 60) // 2
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    size = 0
+    for i in ids:
+        add = len(i) + (1 if current else 0)
+        if current and size + add > budget:
+            chunks.append(current)
+            current, size = [], 0
+            add = len(i)
+        current.append(i)
+        size += add
+    if current:
+        chunks.append(current)
+
+    return [
+        f"```\n{' '.join(c)}\n```\n📱 **Mobile** *(press and hold to copy)*\n`{' '.join(c)}`"
+        for c in chunks
+    ]
+
+
+async def _send_ids(send, ids: list[str], **kwargs):
+    """Send IDs via `send` (ctx.send / interaction.followup.send), one message per chunk."""
+    for text in _format_ids_messages(ids):
+        await send(text, allowed_mentions=NO_MENTIONS, **kwargs)
+
+
+# ------------------------------------------------------------------ #
 #  Spawn rate embed builder                                            #
 # ------------------------------------------------------------------ #
 
@@ -1111,7 +1195,7 @@ class PokeTools(commands.Cog, name="PokeTools"):
             await interaction.followup.send("❌ No Pokétwo IDs found in that message.", allowed_mentions=NO_MENTIONS)
             return
 
-        await interaction.followup.send(" ".join(ids), allowed_mentions=NO_MENTIONS)
+        await _send_ids(interaction.followup.send, ids)
 
     @commands.command(name="extract", aliases=["extractids", "e"])
     async def extractids_prefix(self, ctx: commands.Context, message_id: Optional[int] = None):
@@ -1149,7 +1233,7 @@ class PokeTools(commands.Cog, name="PokeTools"):
                 await ctx.send("❌ No Pokétwo IDs found in that message.", allowed_mentions=NO_MENTIONS)
                 return
 
-            await ctx.send(" ".join(ids), allowed_mentions=NO_MENTIONS)
+            await _send_ids(ctx.send, ids)
 
     # ================================================================ #
     #  Color converter                                                   #
@@ -1224,6 +1308,34 @@ class PokeTools(commands.Cog, name="PokeTools"):
     #  Owner utilities                                                   #
     # ================================================================ #
 
+    @commands.command(name="dumpv2")
+    @commands.is_owner()
+    async def dumpv2(self, ctx: commands.Context):
+        """Owner only: reply to any message to dump its embeds/component tree (debugging)."""
+        ref = ctx.message.reference
+        if not (ref and ref.message_id):
+            await ctx.send("❌ Reply to a message with `p!dumpv2`.", allowed_mentions=NO_MENTIONS)
+            return
+        msg = await _resolve_message(ctx.channel, ref.message_id, self.bot)
+        if msg is None:
+            await ctx.send("❌ Could not fetch that message.", allowed_mentions=NO_MENTIONS)
+            return
+
+        lines = [
+            f"flags={msg.flags.value}  components_v2={getattr(msg.flags, 'components_v2', 'n/a')}",
+            f"content={msg.content!r}  embeds={len(msg.embeds)}",
+        ]
+        lines.extend(_dump_components(msg.components) or ["(no components)"])
+        text = "\n".join(lines)
+
+        if len(text) < 1800:
+            await ctx.send(f"```\n{text.replace('```', chr(39) * 3)}\n```", allowed_mentions=NO_MENTIONS)
+        else:
+            await ctx.send(
+                file=discord.File(io.BytesIO(text.encode("utf-8")), filename="components.txt"),
+                allowed_mentions=NO_MENTIONS,
+            )
+
     @commands.command(name="reloadsr")
     @commands.is_owner()
     async def reloadsr(self, ctx: commands.Context):
@@ -1281,7 +1393,7 @@ async def extractids_context_menu(interaction: discord.Interaction, message: dis
         )
         return
 
-    await interaction.followup.send(" ".join(ids), allowed_mentions=NO_MENTIONS)
+    await _send_ids(interaction.followup.send, ids)
 
 
 async def setup(bot: commands.Bot):
