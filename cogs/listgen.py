@@ -127,10 +127,25 @@ else:
     _BEST_NAMES_LOWER = {}
 
 
+def _component_texts(components) -> list[str]:
+    """Collect the text of every TextDisplay in a Components V2 tree (discord.py 2.6+)."""
+    texts: list[str] = []
+    for comp in components or []:
+        content = getattr(comp, "content", None)
+        if isinstance(content, str) and content:
+            texts.append(content)
+        texts.extend(_component_texts(getattr(comp, "children", None)))
+        accessory = getattr(comp, "accessory", None)
+        if accessory is not None:
+            texts.extend(_component_texts([accessory]))
+    return texts
+
+
 def extract_from_message(msg: "discord.Message") -> list[str]:
     """
     Extract all Pokémon names from a Discord message — both its plain-text
-    content and every text field inside any embedded messages.
+    content, every text field inside any embeds, and the text of Components V2
+    messages (containers / sections / text displays).
 
     Returns a deduplicated list in order of first appearance.
     """
@@ -152,6 +167,8 @@ def extract_from_message(msg: "discord.Message") -> list[str]:
             blobs.append(embed.footer.text)
         if embed.author and embed.author.name:
             blobs.append(embed.author.name)
+
+    blobs.extend(_component_texts(getattr(msg, "components", None)))
 
     seen: set[str] = set()
     result: list[str] = []
