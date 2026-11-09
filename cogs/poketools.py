@@ -14,6 +14,31 @@ from config import EMBED_COLOR
 
 NO_MENTIONS = discord.AllowedMentions.none()
 
+
+# ------------------------------------------------------------------ #
+#  Components V2 helpers                                               #
+# ------------------------------------------------------------------ #
+# Messages sent with the IS_COMPONENTS_V2 flag have NO embeds and NO content.
+# Their text lives in a component tree (Container -> Section -> TextDisplay ...)
+# on `message.components`. Requires discord.py 2.6+.
+
+def _component_texts(components) -> list[str]:
+    """Recursively collect the text of every TextDisplay in a component tree."""
+    texts: list[str] = []
+    for comp in components or []:
+        content = getattr(comp, "content", None)
+        if isinstance(content, str) and content:
+            texts.append(content)
+        texts.extend(_component_texts(getattr(comp, "children", None)))
+        accessory = getattr(comp, "accessory", None)
+        if accessory is not None:
+            texts.extend(_component_texts([accessory]))
+    return texts
+
+
+def _is_v2_message(message: discord.Message) -> bool:
+    return bool(_component_texts(getattr(message, "components", None)))
+
 # ------------------------------------------------------------------ #
 #  Spawn rate data                                                     #
 # ------------------------------------------------------------------ #
@@ -526,9 +551,15 @@ def _objectid_to_datetime(object_id: str) -> datetime.datetime:
 
 def _extract_objectid_from_embed(message: discord.Message) -> Optional[str]:
     """
-    Search all embeds on a message for a Pokétwo-style footer containing
-    'ID: <objectid>'.  Returns the ObjectID string, or None if not found.
+    Find a Pokétwo-style 'ID: <objectid>' on a message.  Checks embed footers
+    first (old style), then the text of Components V2 messages.
+    Returns the ObjectID string, or None if not found.
     """
+    for text in _component_texts(getattr(message, "components", None)):
+        m = re.search(r"ID:\s*[*_`]*([0-9a-fA-F]{24})", text)
+        if m:
+            return m.group(1)
+
     for embed in message.embeds:
         footer_text = embed.footer.text or ""
         # Footer format: "Displaying pokémon XXXXX. ID: <objectid>"
@@ -543,10 +574,18 @@ def _extract_objectid_from_embed(message: discord.Message) -> Optional[str]:
 
 def _extract_chain_from_embed(message: discord.Message) -> Optional[int]:
     """
-    Search a message's embeds for a Pokétwo Shiny Hunt "Chain" field
-    (e.g. field name "Chain", value "10") and return it as an int.
-    Returns None if no such field is found.
+    Find a Pokétwo Shiny Hunt "Chain" value and return it as an int.
+    Checks embed fields (old style) and Components V2 text.
+    Returns None if no chain is found.
     """
+    for text in _component_texts(getattr(message, "components", None)):
+        m = re.search(r"chain\W{0,6}([\d,]+)", text, re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+
     for embed in message.embeds:
         for field in embed.fields:
             name = (field.name or "").strip().lower()
@@ -1024,7 +1063,8 @@ class PokeTools(commands.Cog, name="PokeTools"):
     @staticmethod
     def _extract_ids_from_embed(message: discord.Message) -> list[str]:
         """
-        Extract Pokétwo pokémon/listing IDs from a message embed description.
+        Extract Pokétwo pokémon/listing IDs from a message. Works on both old
+        embed descriptions and Components V2 (container / text display) messages.
 
         Handles all known variants:
           `39556693`　...          — marketplace (no padding)
@@ -1034,13 +1074,16 @@ class PokeTools(commands.Cog, name="PokeTools"):
 
         Returns IDs in top-to-bottom order as plain strings (no padding).
         """
+        blocks: list[str] = [e.description or "" for e in message.embeds]
+        blocks.extend(_component_texts(getattr(message, "components", None)))
+
         ids = []
-        for embed in message.embeds:
-            desc = embed.description or ""
-            for line in desc.splitlines():
+        for block in blocks:
+            for line in block.splitlines():
                 # Match the first backtick-wrapped token on the line, optionally inside **
+                # (and optionally after a list/quote marker in V2 text).
                 # Captures: **`  123`** or `123` or ` 123`
-                m = re.match(r"^\*{0,2}`\s*(\d+)`\*{0,2}", line.strip())
+                m = re.match(r"^(?:[-•>]\s+)?\*{0,2}`\s*(\d+)`\*{0,2}", line.strip())
                 if m:
                     ids.append(m.group(1))
         return ids
@@ -1065,7 +1108,7 @@ class PokeTools(commands.Cog, name="PokeTools"):
 
         ids = self._extract_ids_from_embed(msg)
         if not ids:
-            await interaction.followup.send("❌ No Pokétwo IDs found in that message's embeds.", allowed_mentions=NO_MENTIONS)
+            await interaction.followup.send("❌ No Pokétwo IDs found in that message.", allowed_mentions=NO_MENTIONS)
             return
 
         await interaction.followup.send(" ".join(ids), allowed_mentions=NO_MENTIONS)
@@ -1103,7 +1146,7 @@ class PokeTools(commands.Cog, name="PokeTools"):
 
             ids = self._extract_ids_from_embed(msg)
             if not ids:
-                await ctx.send("❌ No Pokétwo IDs found in that message's embeds.", allowed_mentions=NO_MENTIONS)
+                await ctx.send("❌ No Pokétwo IDs found in that message.", allowed_mentions=NO_MENTIONS)
                 return
 
             await ctx.send(" ".join(ids), allowed_mentions=NO_MENTIONS)
@@ -1232,7 +1275,7 @@ async def extractids_context_menu(interaction: discord.Interaction, message: dis
     ids = PokeTools._extract_ids_from_embed(message)
     if not ids:
         await interaction.followup.send(
-            "❌ No Pokétwo IDs found in that message's embeds.",
+            "❌ No Pokétwo IDs found in that message.",
             ephemeral=True,
                 allowed_mentions=NO_MENTIONS,
         )
